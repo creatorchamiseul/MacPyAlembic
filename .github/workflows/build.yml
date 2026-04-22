@@ -39,7 +39,7 @@ jobs:
       # ✅ Boost 직접 빌드 (python 포함)
       - name: Build Boost (with Python)
         run: |
-          curl -L https://boostorg.jfrog.io/artifactory/main/release/1.84.0/source/boost_1_84_0.tar.gz -o boost.tar.gz
+          curl -L https://archives.boost.io/release/1.84.0/source/boost_1_84_0.tar.gz -o boost.tar.gz
           tar -xzf boost.tar.gz
           cd boost_1_84_0
 
