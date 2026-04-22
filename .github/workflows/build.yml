@@ -23,17 +23,17 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install Dependencies
+      - name: Install Dependencies (FIX Imath)
         run: |
           brew update
-          brew install cmake imath openexr zlib bzip2
+          brew install cmake openexr zlib bzip2
+          pip install imath
 
       - name: Set Python Env
         run: |
           echo "PYTHON_EXEC=$(which python3)" >> $GITHUB_ENV
           echo "PYTHON_INCLUDE=$(python3 -c "from sysconfig import get_paths as gp; print(gp()['include'])")" >> $GITHUB_ENV
           echo "PYTHON_ROOT=$(python3 -c "import sys; print(sys.prefix)")" >> $GITHUB_ENV
-          echo "PYTHON_LIB=$(python3 -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))")" >> $GITHUB_ENV
 
       - name: Build Boost (LOCAL PREFIX)
         run: |
@@ -53,10 +53,15 @@ jobs:
           git checkout 1.8.5
           git submodule update --init --recursive
 
-      # 💣 핵심: CMake OLD 정책 제거
-      - name: Patch CMake (fix CMP0042)
+      # CMP0042 FIX
+      - name: Patch CMake Policy
         run: |
           sed -i '' 's/CMAKE_POLICY(SET CMP0042 OLD)/CMAKE_POLICY(SET CMP0042 NEW)/g' alembic/CMakeLists.txt
+
+      # 💣 핵심 FIX: PyImath 링크 제거
+      - name: Patch PyAlembic Imath
+        run: |
+          sed -i '' 's/Imath::PyImath_Python3_[0-9_]*/Imath::Imath/g' alembic/python/PyAlembic/CMakeLists.txt
 
       - name: Build Alembic + PyAlembic
         run: |
@@ -69,13 +74,8 @@ jobs:
             -DUSE_STATIC_BOOST=OFF \
             -DCMAKE_BUILD_TYPE=Release \
             -DBOOST_ROOT=$GITHUB_WORKSPACE/boost \
-            -DBOOST_INCLUDEDIR=$GITHUB_WORKSPACE/boost/include \
-            -DBOOST_LIBRARYDIR=$GITHUB_WORKSPACE/boost/lib \
-            -DPYTHON_EXECUTABLE=$PYTHON_EXEC \
             -DPython3_EXECUTABLE=$PYTHON_EXEC \
             -DPython3_ROOT_DIR=$PYTHON_ROOT \
-            -DPYTHON_INCLUDE_DIR=$PYTHON_INCLUDE \
-            -DPYTHON_LIBRARY=$PYTHON_LIB \
             -DCMAKE_INSTALL_PREFIX=$PWD/install \
             -DCMAKE_INSTALL_RPATH="@loader_path"
 
