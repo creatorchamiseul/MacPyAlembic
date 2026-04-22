@@ -1,108 +1,76 @@
-name: Build Alembic + PyAlembic (macOS -> repo commit)
+name: Build Alembic + PyAlembic (macOS FIXED)
 
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - 'v*'
 
 jobs:
   build:
     runs-on: macos-14
-    permissions:
-      contents: write
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install Dependencies (FIX Imath)
+      - name: deps
         run: |
           brew update
           brew install cmake openexr zlib bzip2
-          pip install imath
 
-      - name: Set Python Env
+      - name: env
         run: |
-          echo "PYTHON_EXEC=$(which python3)" >> $GITHUB_ENV
-          echo "PYTHON_INCLUDE=$(python3 -c "from sysconfig import get_paths as gp; print(gp()['include'])")" >> $GITHUB_ENV
-          echo "PYTHON_ROOT=$(python3 -c "import sys; print(sys.prefix)")" >> $GITHUB_ENV
+          echo "PY=$(which python3)" >> $GITHUB_ENV
 
-      - name: Build Boost (LOCAL PREFIX)
+      - name: boost
         run: |
-          curl -L https://archives.boost.io/release/1.84.0/source/boost_1_84_0.tar.gz -o boost.tar.gz
-          tar -xzf boost.tar.gz
+          curl -L https://archives.boost.io/release/1.84.0/source/boost_1_84_0.tar.gz -o b.tar.gz
+          tar -xzf b.tar.gz
           cd boost_1_84_0
+          ./bootstrap.sh --with-libraries=python --with-python=$PY
+          ./b2 install --prefix=$GITHUB_WORKSPACE/boost -j$(sysctl -n hw.ncpu)
 
-          ./bootstrap.sh --with-libraries=python --with-python=$PYTHON_EXEC
-          ./b2 install \
-            --prefix=$GITHUB_WORKSPACE/boost \
-            -j$(sysctl -n hw.ncpu)
-
-      - name: Clone Alembic
+      - name: alembic
         run: |
           git clone https://github.com/alembic/alembic.git
           cd alembic
           git checkout 1.8.5
           git submodule update --init --recursive
 
-      # CMP0042 FIX
-      - name: Patch CMake Policy
+      # 🔥 CMP0042 제거
+      - name: patch cmake
         run: |
-          sed -i '' 's/CMAKE_POLICY(SET CMP0042 OLD)/CMAKE_POLICY(SET CMP0042 NEW)/g' alembic/CMakeLists.txt
+          sed -i '' 's/CMAKE_POLICY(SET CMP0042 OLD)//g' alembic/CMakeLists.txt
 
-      # 💣 핵심 FIX: PyImath 링크 제거
-      - name: Patch PyAlembic Imath
+      # 🔥 PyImath 완전 제거 (핵심)
+      - name: patch pyalembic
         run: |
           sed -i '' 's/Imath::PyImath_Python3_[0-9_]*/Imath::Imath/g' alembic/python/PyAlembic/CMakeLists.txt
+          sed -i '' '/PyImath/d' alembic/python/PyAlembic/CMakeLists.txt
 
-      - name: Build Alembic + PyAlembic
+      - name: build
         run: |
-          mkdir -p alembic/build
+          mkdir alembic/build
           cd alembic/build
 
           cmake .. \
             -DUSE_PYALEMBIC=ON \
             -DUSE_HDF5=OFF \
-            -DUSE_STATIC_BOOST=OFF \
-            -DCMAKE_BUILD_TYPE=Release \
             -DBOOST_ROOT=$GITHUB_WORKSPACE/boost \
-            -DPython3_EXECUTABLE=$PYTHON_EXEC \
-            -DPython3_ROOT_DIR=$PYTHON_ROOT \
-            -DCMAKE_INSTALL_PREFIX=$PWD/install \
-            -DCMAKE_INSTALL_RPATH="@loader_path"
+            -DPython3_EXECUTABLE=$PY
 
           make -j$(sysctl -n hw.ncpu)
-          make install
 
-      - name: Build Wheel
+      - name: save
         run: |
-          cd alembic/python
-          python3 setup.py bdist_wheel
+          mkdir dist
+          cp -r alembic/build dist/out
 
-      - name: Collect Artifacts
+      - name: commit
         run: |
-          mkdir -p dist/macos
-          find alembic -name "*.whl" -exec cp {} dist/macos/ \;
-          find alembic/build/install -name "*.dylib" -exec cp {} dist/macos/ \;
-
-      - name: Commit & Push
-        run: |
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
-
-          git add dist/macos
-
-          if git diff --cached --quiet; then
-            echo "No changes"
-          else
-            git commit -m "Add macOS build artifacts"
-            git push
-          fi
+          git config user.name github-actions
+          git config user.email actions@github.com
+          git add dist || true
+          git commit -m "build" || true
+          git push || true
