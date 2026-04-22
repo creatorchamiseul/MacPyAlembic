@@ -53,6 +53,11 @@ jobs:
           git checkout 1.8.5
           git submodule update --init --recursive
 
+      # 💣 핵심: CMake OLD 정책 제거
+      - name: Patch CMake (fix CMP0042)
+        run: |
+          sed -i '' 's/CMAKE_POLICY(SET CMP0042 OLD)/CMAKE_POLICY(SET CMP0042 NEW)/g' alembic/CMakeLists.txt
+
       - name: Build Alembic + PyAlembic
         run: |
           mkdir -p alembic/build
@@ -71,7 +76,6 @@ jobs:
             -DPython3_ROOT_DIR=$PYTHON_ROOT \
             -DPYTHON_INCLUDE_DIR=$PYTHON_INCLUDE \
             -DPYTHON_LIBRARY=$PYTHON_LIB \
-            -DCMAKE_POLICY_DEFAULT_CMP0042=NEW \
             -DCMAKE_INSTALL_PREFIX=$PWD/install \
             -DCMAKE_INSTALL_RPATH="@loader_path"
 
