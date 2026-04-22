@@ -1,4 +1,4 @@
-name: Build Alembic + PyAlembic (macOS)
+name: Build Alembic (macOS Stable)
 
 on:
   push:
@@ -26,54 +26,54 @@ jobs:
           brew update
           brew install cmake boost imath openexr zlib
 
-      - name: Clone Alembic (Stable Version)
+      - name: Force Python 3.11 Path (중요)
+        run: |
+          echo "PYTHON_EXEC=$(which python3)" >> $GITHUB_ENV
+          echo "PYTHON_INCLUDE=$(python3 -c "from sysconfig import get_paths as gp; print(gp()['include'])")" >> $GITHUB_ENV
+          echo "PYTHON_ROOT=$(python3 -c "import sys; print(sys.prefix)")" >> $GITHUB_ENV
+          echo "PYTHON_LIB=$(python3 -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))")" >> $GITHUB_ENV
+
+      - name: Clone Alembic
         run: |
           git clone https://github.com/alembic/alembic.git
           cd alembic
           git checkout 1.8.5
           git submodule update --init --recursive
 
-      - name: Build Alembic & PyAlembic
+      - name: Build Alembic (PyAlembic OFF)
         run: |
           mkdir -p alembic/build
           cd alembic/build
 
-          PYTHON_EXEC=$(which python3)
-          PYTHON_INCLUDE=$(python3 -c "from sysconfig import get_paths as gp; print(gp()['include'])")
-          PYTHON_LIB=$(python3 -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))")
-
           cmake .. \
-            -DUSE_PYALEMBIC=ON \
+            -DUSE_PYALEMBIC=OFF \
             -DUSE_HDF5=OFF \
             -DUSE_STATIC_BOOST=OFF \
             -DCMAKE_BUILD_TYPE=Release \
             -DPYTHON_EXECUTABLE=$PYTHON_EXEC \
+            -DPython3_EXECUTABLE=$PYTHON_EXEC \
+            -DPython3_ROOT_DIR=$PYTHON_ROOT \
             -DPYTHON_INCLUDE_DIR=$PYTHON_INCLUDE \
             -DPYTHON_LIBRARY=$PYTHON_LIB \
+            -DCMAKE_POLICY_DEFAULT_CMP0042=NEW \
             -DCMAKE_INSTALL_PREFIX=$PWD/install \
             -DCMAKE_INSTALL_RPATH="@loader_path"
 
           make -j$(sysctl -n hw.ncpu)
           make install
 
-      - name: Build Wheel
-        run: |
-          cd alembic/python
-          python3 setup.py bdist_wheel
-
       - name: Collect Artifacts
         run: |
           mkdir -p release_assets
-          find alembic -name "*.whl" -exec cp {} release_assets/ \;
           find alembic/build/install -name "*.dylib" -exec cp {} release_assets/ \;
 
-      - name: Upload Artifact (Debug용)
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: alembic-macos-build
+          name: alembic-macos
           path: release_assets/
 
-      - name: Create GitHub Release
+      - name: Create Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
