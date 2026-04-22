@@ -1,11 +1,11 @@
-name: Build Alembic + PyAlembic (FINAL REAL)
+name: Build PyAlembic (REAL FIX)
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-13   # 🔥 중요 (구버전 환경)
 
     steps:
       - uses: actions/checkout@v4
@@ -16,21 +16,38 @@ jobs:
 
       - name: deps
         run: |
-          brew update
-          brew install cmake openexr zlib bzip2
+          brew install cmake zlib
 
       - name: env
         run: |
           echo "PY=$(which python3)" >> $GITHUB_ENV
 
+      # 🔥 Boost
       - name: boost
         run: |
-          curl -L https://archives.boost.io/release/1.84.0/source/boost_1_84_0.tar.gz -o b.tar.gz
+          curl -L https://archives.boost.io/release/1.78.0/source/boost_1_78_0.tar.gz -o b.tar.gz
           tar -xzf b.tar.gz
-          cd boost_1_84_0
+          cd boost_1_78_0
           ./bootstrap.sh --with-libraries=python --with-python=$PY
-          ./b2 install --prefix=$GITHUB_WORKSPACE/boost -j$(sysctl -n hw.ncpu)
+          ./b2 install --prefix=$GITHUB_WORKSPACE/boost
 
+      # 🔥 OpenEXR + Imath (OLD VERSION 핵심)
+      - name: openexr + imath
+        run: |
+          git clone https://github.com/AcademySoftwareFoundation/openexr.git
+          cd openexr
+          git checkout v2.5.9   # 🔥 핵심
+
+          mkdir build && cd build
+          cmake .. \
+            -DCMAKE_INSTALL_PREFIX=$GITHUB_WORKSPACE/openexr \
+            -DPYTHON=$PY \
+            -DOPENEXR_BUILD_PYTHON_LIBS=ON
+
+          make -j$(sysctl -n hw.ncpu)
+          make install
+
+      # 🔥 Alembic
       - name: alembic
         run: |
           git clone https://github.com/alembic/alembic.git
@@ -38,23 +55,7 @@ jobs:
           git checkout 1.8.5
           git submodule update --init --recursive
 
-      # CMP0042 제거
-      - name: patch cmake
-        run: |
-          sed -i '' 's/CMAKE_POLICY(SET CMP0042 OLD)//g' alembic/CMakeLists.txt
-
-      # PyImath 완전 제거
-      - name: patch pyalembic
-        run: |
-          sed -i '' 's/Imath::PyImath_Python3_[0-9_]*/Imath::Imath/g' alembic/python/PyAlembic/CMakeLists.txt
-          sed -i '' '/PyImath/d' alembic/python/PyAlembic/CMakeLists.txt
-
-      # 🔥 핵심 추가 (이거 없으면 또 실패함)
-      - name: fix imath target
-        run: |
-          echo "add_library(Imath::Imath INTERFACE IMPORTED)" >> alembic/python/PyAlembic/CMakeLists.txt
-
-      - name: build
+      - name: build pyalembic
         run: |
           mkdir alembic/build
           cd alembic/build
@@ -63,7 +64,8 @@ jobs:
             -DUSE_PYALEMBIC=ON \
             -DUSE_HDF5=OFF \
             -DBOOST_ROOT=$GITHUB_WORKSPACE/boost \
-            -DPython3_EXECUTABLE=$PY
+            -DALEMBIC_ILMBASE_ROOT=$GITHUB_WORKSPACE/openexr \
+            -DPYTHON_EXECUTABLE=$PY
 
           make -j$(sysctl -n hw.ncpu)
 
@@ -71,11 +73,3 @@ jobs:
         run: |
           mkdir dist
           cp -r alembic/build dist/out
-
-      - name: commit
-        run: |
-          git config user.name github-actions
-          git config user.email actions@github.com
-          git add dist || true
-          git commit -m "build" || true
-          git push || true
