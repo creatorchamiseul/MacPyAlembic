@@ -1,4 +1,4 @@
-name: Build Alembic (macOS Stable)
+name: Build Alembic + PyAlembic (macOS FINAL)
 
 on:
   push:
@@ -16,23 +16,37 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # ✅ Python 3.11 고정 (절대 중요)
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
+      # ✅ 기본 의존성
       - name: Install Dependencies
         run: |
           brew update
-          brew install cmake boost imath openexr zlib
+          brew install cmake imath openexr zlib bzip2
 
-      - name: Force Python 3.11 Path (중요)
+      # ✅ Python 경로 강제 고정
+      - name: Set Python Env
         run: |
           echo "PYTHON_EXEC=$(which python3)" >> $GITHUB_ENV
           echo "PYTHON_INCLUDE=$(python3 -c "from sysconfig import get_paths as gp; print(gp()['include'])")" >> $GITHUB_ENV
           echo "PYTHON_ROOT=$(python3 -c "import sys; print(sys.prefix)")" >> $GITHUB_ENV
           echo "PYTHON_LIB=$(python3 -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))")" >> $GITHUB_ENV
 
+      # ✅ Boost 직접 빌드 (python 포함)
+      - name: Build Boost (with Python)
+        run: |
+          curl -L https://boostorg.jfrog.io/artifactory/main/release/1.84.0/source/boost_1_84_0.tar.gz -o boost.tar.gz
+          tar -xzf boost.tar.gz
+          cd boost_1_84_0
+
+          ./bootstrap.sh --with-libraries=python --with-python=$PYTHON_EXEC
+          ./b2 install -j$(sysctl -n hw.ncpu)
+
+      # ✅ Alembic 클론
       - name: Clone Alembic
         run: |
           git clone https://github.com/alembic/alembic.git
@@ -40,16 +54,18 @@ jobs:
           git checkout 1.8.5
           git submodule update --init --recursive
 
-      - name: Build Alembic (PyAlembic OFF)
+      # ✅ 빌드 (핵심 설정)
+      - name: Build Alembic + PyAlembic
         run: |
           mkdir -p alembic/build
           cd alembic/build
 
           cmake .. \
-            -DUSE_PYALEMBIC=OFF \
+            -DUSE_PYALEMBIC=ON \
             -DUSE_HDF5=OFF \
             -DUSE_STATIC_BOOST=OFF \
             -DCMAKE_BUILD_TYPE=Release \
+            -DBOOST_ROOT=/usr/local \
             -DPYTHON_EXECUTABLE=$PYTHON_EXEC \
             -DPython3_EXECUTABLE=$PYTHON_EXEC \
             -DPython3_ROOT_DIR=$PYTHON_ROOT \
@@ -62,17 +78,27 @@ jobs:
           make -j$(sysctl -n hw.ncpu)
           make install
 
+      # ✅ Wheel 생성
+      - name: Build Wheel
+        run: |
+          cd alembic/python
+          python3 setup.py bdist_wheel
+
+      # ✅ 결과 수집
       - name: Collect Artifacts
         run: |
           mkdir -p release_assets
+          find alembic -name "*.whl" -exec cp {} release_assets/ \;
           find alembic/build/install -name "*.dylib" -exec cp {} release_assets/ \;
 
+      # ✅ 디버그용 업로드
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: alembic-macos
+          name: alembic-macos-final
           path: release_assets/
 
+      # ✅ 릴리스
       - name: Create Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
