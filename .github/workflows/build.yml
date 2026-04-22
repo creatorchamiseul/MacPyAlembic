@@ -1,4 +1,4 @@
-name: Build Alembic + PyAlembic (macOS FIXED)
+name: Build Alembic + PyAlembic (FINAL REAL)
 
 on:
   workflow_dispatch:
@@ -38,16 +38,21 @@ jobs:
           git checkout 1.8.5
           git submodule update --init --recursive
 
-      # 🔥 CMP0042 제거
+      # CMP0042 제거
       - name: patch cmake
         run: |
           sed -i '' 's/CMAKE_POLICY(SET CMP0042 OLD)//g' alembic/CMakeLists.txt
 
-      # 🔥 PyImath 완전 제거 (핵심)
+      # PyImath 완전 제거
       - name: patch pyalembic
         run: |
           sed -i '' 's/Imath::PyImath_Python3_[0-9_]*/Imath::Imath/g' alembic/python/PyAlembic/CMakeLists.txt
           sed -i '' '/PyImath/d' alembic/python/PyAlembic/CMakeLists.txt
+
+      # 🔥 핵심 추가 (이거 없으면 또 실패함)
+      - name: fix imath target
+        run: |
+          echo "add_library(Imath::Imath INTERFACE IMPORTED)" >> alembic/python/PyAlembic/CMakeLists.txt
 
       - name: build
         run: |
