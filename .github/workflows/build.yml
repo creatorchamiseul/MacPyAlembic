@@ -1,75 +1,99 @@
-name: Build PyAlembic (REAL FIX)
+name: Build PyAlembic for Python 3.11
 
 on:
-  workflow_dispatch:
+  push:
+    branches: [ main ]
+  workflow_dispatch: # 수동 실행 가능하도록 설정
 
 jobs:
-  build:
-    runs-on: macos-13   # 🔥 중요 (구버전 환경)
+  build-linux:
+    runs-on: ubuntu-22.04
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      # 1. 의존성 격리를 위해 파이썬 3.11 환경 고정 설정
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          update-environment: true
 
-      - name: deps
+      # 2. 필요한 리눅스 빌드 도구 및 라이브러리 사전 설치
+      # 시스템에 기본 내장된 부스트가 꼬이지 않도록 개발 패키지만 깔고, 파이썬 바인딩은 cmake에서 제어합니다.
+      - name: Install System Dependencies
         run: |
-          brew install cmake zlib
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential libgtest-dev
 
-      - name: env
+      # 3. Imath 라이브러리 빌드 및 설치 (이미지의 libImath 관련 파일 생성용)
+      - name: Clone and Build Imath
         run: |
-          echo "PY=$(which python3)" >> $GITHUB_ENV
+          git clone github.com
+          cd Imath
+          git checkout v3.1.9 # 안정적인 최신 3.x 버전 타겟
+          cmake -B build -H. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr/local
+          sudo cmake --build build --target install -j$(nproc)
 
-      # 🔥 Boost
-      - name: boost
+      # 4. 파이썬 3.11 전용 Boost.Python 빌드
+      # 시스템 전역의 libboost_python312가 엮이는 문제를 원천 차단하기 위해 3.11 소스 빌드를 수행합니다.
+      - name: Download and Build Boost.Python 3.11
         run: |
-          curl -L https://archives.boost.io/release/1.78.0/source/boost_1_78_0.tar.gz -o b.tar.gz
-          tar -xzf b.tar.gz
-          cd boost_1_78_0
-          ./bootstrap.sh --with-libraries=python --with-python=$PY
-          ./b2 install --prefix=$GITHUB_WORKSPACE/boost
+          wget github.com
+          tar -xzf boost-1.83.0.tar.gz
+          cd boost-1.83.0
+          ./bootstrap.sh --with-python=$(which python3) --with-python-version=3.11
+          # 파이썬 바인딩만 타겟으로 타이트하게 빌드하여 시간 단축
+          sudo ./b2 --with-python release install -j$(nproc)
 
-      # 🔥 OpenEXR + Imath (OLD VERSION 핵심)
-      - name: openexr + imath
+      # 5. Alembic & PyAlembic 최종 빌드
+      # CMake 단계에서 파이썬 3.11 실행파일, 헤더 경로, 라이브러리를 강제로 고정 주입합니다.
+      - name: Build Alembic and PyAlembic
         run: |
-          git clone https://github.com/AcademySoftwareFoundation/openexr.git
-          cd openexr
-          git checkout v2.5.9   # 🔥 핵심
-
-          mkdir build && cd build
-          cmake .. \
-            -DCMAKE_INSTALL_PREFIX=$GITHUB_WORKSPACE/openexr \
-            -DPYTHON=$PY \
-            -DOPENEXR_BUILD_PYTHON_LIBS=ON
-
-          make -j$(sysctl -n hw.ncpu)
-          make install
-
-      # 🔥 Alembic
-      - name: alembic
-        run: |
-          git clone https://github.com/alembic/alembic.git
+          git clone github.com
           cd alembic
-          git checkout 1.8.5
-          git submodule update --init --recursive
-
-      - name: build pyalembic
-        run: |
-          mkdir alembic/build
-          cd alembic/build
-
-          cmake .. \
+          git checkout 1.8.11 # 요청하신 이미지와 동일한 1.8.11 버전 타겟
+          
+          cmake -B build -S . \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/alembic_release \
             -DUSE_PYALEMBIC=ON \
-            -DUSE_HDF5=OFF \
-            -DBOOST_ROOT=$GITHUB_WORKSPACE/boost \
-            -DALEMBIC_ILMBASE_ROOT=$GITHUB_WORKSPACE/openexr \
-            -DPYTHON_EXECUTABLE=$PY
+            -DPYTHON_EXECUTABLE=$(which python3) \
+            -DPYTHON_INCLUDE_DIR=$(python3 -c "from distutils.sysconfig import get_python_inc; print(get_python_inc())") \
+            -DPYTHON_LIBRARY=${{ env.pythonLocation }}/lib/libpython3.11.so \
+            -DBoost_PYTHON_LIBRARY_RELEASE=/usr/local/lib/libboost_python311.so \
+            -DBoost_INCLUDE_DIR=/usr/local/include
+            
+          cmake --build build --target install -j$(nproc)
 
-          make -j$(sysctl -n hw.ncpu)
-
-      - name: save
+      # 6. 이미지에 포함된 모든 필수 런타임 공유 라이브러리를 한곳으로 수집
+      # 빌드가 끝난 파일과 시스템에서 참조한 libImath, libboost_python311, libpython3.11을 단일 폴더로 복사합니다.
+      - name: Collect All Necessary Files into Package
         run: |
-          mkdir dist
-          cp -r alembic/build dist/out
+          mkdir -p ${{ github.workspace }}/output_package
+          
+          # 1) PyAlembic 컴파일 모듈 복사 (*.cpython-311-*.so)
+          find ${{ github.workspace }}/alembic_release/ -name "*alembic*.so" -exec cp {} ${{ github.workspace }}/output_package/ \;
+          
+          # 2) Alembic 본체 라이브러리 복사 (libAlembic.so*)
+          cp -d /usr/local/lib/libAlembic.so* ${{ github.workspace }}/output_package/ || true
+          cp -d ${{ github.workspace }}/alembic_release/lib/libAlembic.so* ${{ github.workspace }}/output_package/ || true
+          
+          # 3) 빌드된 파이썬 3.11 전용 부스트 라이브러리 복사 (libboost_python311.so*)
+          cp -d /usr/local/lib/libboost_python311.so* ${{ github.workspace }}/output_package/
+          
+          # 4) Imath 수학 라이브러리 복사 (libImath.so*)
+          cp -d /usr/local/lib/libImath*.so* ${{ github.workspace }}/output_package/
+          
+          # 5) 시스템 깃허브 액션 러너의 파이썬 3.11 런타임 파일 복사 (libpython3.11.so*)
+          cp -d ${{ env.pythonLocation }}/lib/libpython3.11.so* ${{ github.workspace }}/output_package/
+
+      # 7. 빌드가 정상 완료된 전체 파일 목록을 아티팩트로 압축 업로드
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pyalembic-python3.11-linux-x86_64
+          path: ${{ github.workspace }}/output_package/*
