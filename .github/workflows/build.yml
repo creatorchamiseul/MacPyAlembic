@@ -1,99 +1,262 @@
-name: Build PyAlembic for Python 3.11
+name: Build_Linux_Alembic_CP311
 
 on:
-  push:
-    branches: [ main ]
-  workflow_dispatch: # 수동 실행 가능하도록 설정
+  workflow_dispatch:
 
 jobs:
-  build-linux:
-    runs-on: ubuntu-22.04
+  build-linux-cp311:
+    runs-on: ubuntu-24.04
 
     steps:
-      - name: Checkout Source Code
+      # ============================================================
+      # Checkout
+      # ============================================================
+      - name: Checkout
         uses: actions/checkout@v4
 
-      # 1. 의존성 격리를 위해 파이썬 3.11 환경 고정 설정
-      - name: Set up Python 3.11
+      # ============================================================
+      # Setup Python 3.11
+      # ============================================================
+      - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-          update-environment: true
+          python-version: "3.11"
 
-      # 2. 필요한 리눅스 빌드 도구 및 라이브러리 사전 설치
-      # 시스템에 기본 내장된 부스트가 꼬이지 않도록 개발 패키지만 깔고, 파이썬 바인딩은 cmake에서 제어합니다.
-      - name: Install System Dependencies
+      # ============================================================
+      # Install Dependencies
+      # ============================================================
+      - name: Install Dependencies
+        shell: bash
         run: |
+          set -eux
+
           sudo apt-get update
-          sudo apt-get install -y cmake build-essential libgtest-dev
 
-      # 3. Imath 라이브러리 빌드 및 설치 (이미지의 libImath 관련 파일 생성용)
-      - name: Clone and Build Imath
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            ninja-build \
+            git \
+            curl \
+            wget \
+            unzip \
+            tar \
+            xz-utils \
+            pkg-config \
+            zlib1g-dev \
+            libbz2-dev \
+            liblzma-dev \
+            libffi-dev \
+            libssl-dev \
+            libopenexr-dev
+
+      # ============================================================
+      # Verify Python
+      # ============================================================
+      - name: Verify Python
+        shell: bash
         run: |
-          git clone github.com
-          cd Imath
-          git checkout v3.1.9 # 안정적인 최신 3.x 버전 타겟
-          cmake -B build -H. \
+          set -eux
+
+          which python
+          python --version
+
+          python -c "
+          import sys
+          import sysconfig
+          print('Executable:', sys.executable)
+          print('Include:', sysconfig.get_paths()['include'])
+          "
+
+      # ============================================================
+      # Build Boost Python 3.11
+      # ============================================================
+      - name: Build Boost Python 3.11
+        shell: bash
+        run: |
+          set -eux
+
+          BOOST_VERSION=1.91.0
+          BOOST_FOLDER=boost_1_91_0
+
+          curl -L \
+            https://archives.boost.io/release/${BOOST_VERSION}/source/${BOOST_FOLDER}.tar.gz \
+            -o boost.tar.gz
+
+          tar -xf boost.tar.gz
+
+          cd ${BOOST_FOLDER}
+
+          PYTHON_BIN=$(which python)
+
+          ./bootstrap.sh \
+            --with-python="$PYTHON_BIN" \
+            --with-python-version=3.11
+
+          ./b2 \
+            -j$(nproc) \
+            link=shared \
+            runtime-link=shared \
+            threading=multi \
+            variant=release \
+            python=3.11 \
+            --with-python \
+            install \
+            --prefix=$HOME/boost-install
+
+          echo "BOOST_ROOT=$HOME/boost-install" >> $GITHUB_ENV
+
+          ls -la $HOME/boost-install/lib | grep boost_python
+
+      # ============================================================
+      # Verify Boost
+      # ============================================================
+      - name: Verify Boost Python
+        shell: bash
+        run: |
+          set -eux
+          ls -la $HOME/boost-install/lib | grep -E "boost_python3(11|12|13)" || true
+
+      # ============================================================
+      # Install NumPy (Imath PyImathNumpy 빌드에 필수)
+      # ============================================================
+      - name: Install NumPy for Imath
+        shell: bash
+        run: |
+          set -eux
+          python -m pip install numpy
+
+      # ============================================================
+      # Build Imath (with PyImath)
+      # ============================================================
+      - name: Build Imath with PyImath
+        shell: bash
+        run: |
+          set -eux
+
+          git clone --depth 1 https://github.com/AcademySoftwareFoundation/Imath.git Imath
+
+          mkdir -p Imath/build
+          cd Imath/build
+
+          PYTHON_BIN=$(which python)
+
+          cmake .. \
+            -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX=/usr/local
-          sudo cmake --build build --target install -j$(nproc)
+            -DPYTHON=ON \
+            -DBUILD_SHARED_LIBS=ON \
+            -DCMAKE_INSTALL_PREFIX=$HOME/imath-install \
+            -DPython3_EXECUTABLE="$PYTHON_BIN" \
+            -DBoost_ROOT="$HOME/boost-install" \
+            -DBoost_NO_SYSTEM_PATHS=ON \
+            -DBoost_USE_MULTITHREADED=ON \
+            -DBoost_USE_STATIC_LIBS=OFF
 
-      # 4. 파이썬 3.11 전용 Boost.Python 빌드
-      # 시스템 전역의 libboost_python312가 엮이는 문제를 원천 차단하기 위해 3.11 소스 빌드를 수행합니다.
-      - name: Download and Build Boost.Python 3.11
-        run: |
-          wget github.com
-          tar -xzf boost-1.83.0.tar.gz
-          cd boost-1.83.0
-          ./bootstrap.sh --with-python=$(which python3) --with-python-version=3.11
-          # 파이썬 바인딩만 타겟으로 타이트하게 빌드하여 시간 단축
-          sudo ./b2 --with-python release install -j$(nproc)
+          ninja -j$(nproc)
+          ninja install
 
-      # 5. Alembic & PyAlembic 최종 빌드
-      # CMake 단계에서 파이썬 3.11 실행파일, 헤더 경로, 라이브러리를 강제로 고정 주입합니다.
-      - name: Build Alembic and PyAlembic
+          echo "IMATH_ROOT=$HOME/imath-install" >> $GITHUB_ENV
+
+          ls -la $HOME/imath-install/lib
+
+      # ============================================================
+      # Clone Alembic
+      # ============================================================
+      - name: Clone Alembic
+        shell: bash
         run: |
-          git clone github.com
-          cd alembic
-          git checkout 1.8.11 # 요청하신 이미지와 동일한 1.8.11 버전 타겟
-          
-          cmake -B build -S . \
+          set -eux
+          git clone --recursive https://github.com/alembic/alembic.git
+
+      # ============================================================
+      # Configure Alembic
+      # ============================================================
+      - name: Configure Alembic
+        shell: bash
+        run: |
+          set -eux
+
+          mkdir -p alembic/build
+          cd alembic/build
+
+          PYTHON_BIN=$(which python)
+          BOOST_LIB=$(find $HOME/boost-install/lib -name "libboost_python311.so*" | head -n 1)
+
+          echo "BOOST_LIB=$BOOST_LIB"
+
+          cmake .. \
+            -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/alembic_release \
             -DUSE_PYALEMBIC=ON \
-            -DPYTHON_EXECUTABLE=$(which python3) \
-            -DPYTHON_INCLUDE_DIR=$(python3 -c "from distutils.sysconfig import get_python_inc; print(get_python_inc())") \
-            -DPYTHON_LIBRARY=${{ env.pythonLocation }}/lib/libpython3.11.so \
-            -DBoost_PYTHON_LIBRARY_RELEASE=/usr/local/lib/libboost_python311.so \
-            -DBoost_INCLUDE_DIR=/usr/local/include
-            
-          cmake --build build --target install -j$(nproc)
+            -DALEMBIC_SHARED_LIBS=ON \
+            -DPython3_EXECUTABLE="$PYTHON_BIN" \
+            -DPYTHON_EXECUTABLE="$PYTHON_BIN" \
+            -DBOOST_ROOT="$HOME/boost-install" \
+            -DBoost_NO_SYSTEM_PATHS=ON \
+            -DBoost_USE_STATIC_LIBS=OFF \
+            -DBoost_USE_MULTITHREADED=ON \
+            -DBoost_USE_STATIC_RUNTIME=OFF \
+            -DBoost_INCLUDE_DIR="$HOME/boost-install/include" \
+            -DBoost_LIBRARY_DIR="$HOME/boost-install/lib" \
+            -DBoost_PYTHON_LIBRARY="$BOOST_LIB" \
+            -DImath_ROOT="$HOME/imath-install"
 
-      # 6. 이미지에 포함된 모든 필수 런타임 공유 라이브러리를 한곳으로 수집
-      # 빌드가 끝난 파일과 시스템에서 참조한 libImath, libboost_python311, libpython3.11을 단일 폴더로 복사합니다.
-      - name: Collect All Necessary Files into Package
+      # ============================================================
+      # Build Alembic
+      # ============================================================
+      - name: Build Alembic
+        shell: bash
         run: |
-          mkdir -p ${{ github.workspace }}/output_package
-          
-          # 1) PyAlembic 컴파일 모듈 복사 (*.cpython-311-*.so)
-          find ${{ github.workspace }}/alembic_release/ -name "*alembic*.so" -exec cp {} ${{ github.workspace }}/output_package/ \;
-          
-          # 2) Alembic 본체 라이브러리 복사 (libAlembic.so*)
-          cp -d /usr/local/lib/libAlembic.so* ${{ github.workspace }}/output_package/ || true
-          cp -d ${{ github.workspace }}/alembic_release/lib/libAlembic.so* ${{ github.workspace }}/output_package/ || true
-          
-          # 3) 빌드된 파이썬 3.11 전용 부스트 라이브러리 복사 (libboost_python311.so*)
-          cp -d /usr/local/lib/libboost_python311.so* ${{ github.workspace }}/output_package/
-          
-          # 4) Imath 수학 라이브러리 복사 (libImath.so*)
-          cp -d /usr/local/lib/libImath*.so* ${{ github.workspace }}/output_package/
-          
-          # 5) 시스템 깃허브 액션 러너의 파이썬 3.11 런타임 파일 복사 (libpython3.11.so*)
-          cp -d ${{ env.pythonLocation }}/lib/libpython3.11.so* ${{ github.workspace }}/output_package/
+          set -eux
+          cd alembic/build
+          ninja -j$(nproc)
 
-      # 7. 빌드가 정상 완료된 전체 파일 목록을 아티팩트로 압축 업로드
-      - name: Upload Build Artifacts
+      # ============================================================
+      # Verify ABI
+      # ============================================================
+      - name: Verify Alembic ABI
+        shell: bash
+        run: |
+          set -eux
+
+          ALEMBIC_SO=$(find alembic/build -name "*cpython-311*.so" | head -n 1)
+          echo "ALEMBIC_SO=$ALEMBIC_SO"
+
+          echo "=== LDD CHECK ==="
+          ldd "$ALEMBIC_SO" | grep -E 'boost|python|Imath|Half|PyImath' || true
+
+      # ============================================================
+      # Package (Blender add-on용 모든 파일)
+      # ============================================================
+      - name: Package linux_311
+        shell: bash
+        run: |
+          set -eux
+
+          mkdir -p linux_311
+
+          ALEMBIC_SO=$(find alembic/build -name "*cpython-311*.so" | head -n 1)
+          cp "$ALEMBIC_SO" linux_311/
+
+          # Alembic core
+          find alembic/build -name "libAlembic.so*" -exec cp {} linux_311/ \;
+
+          # Imath + PyImath (필수)
+          cp $HOME/imath-install/lib/libImath*.so* linux_311/ || true
+          cp $HOME/imath-install/lib/libHalf*.so* linux_311/ || true
+          cp $HOME/imath-install/lib/libPyImath*.so* linux_311/ || true
+
+          # Boost Python
+          cp $HOME/boost-install/lib/libboost_python311.so* linux_311/ || true
+
+          ls -la linux_311
+
+      # ============================================================
+      # Upload Artifact
+      # ============================================================
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pyalembic-python3.11-linux-x86_64
-          path: ${{ github.workspace }}/output_package/*
+          name: linux_311
+          path: linux_311
